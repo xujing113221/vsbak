@@ -1,0 +1,437 @@
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+#
+#  VSBAK  -  Very Simple Backup
+#
+#  Script for data backups on Linux systems with the possiblity to 
+#
+#    1. Encrypt the archive with the backup files
+#    2. Upload the backup archive to the LUIS arcvhive server
+#
+#  (c) 2018 - 2019  Torsten Lilge, Institut für Regelungstechnik (IRT),
+#                                  Leibniz Universität Hannover
+#
+#  This software is intended for use at IRT and on home computers of
+#  employed staff members at IRT only. All other use is prohibited.
+#
+#  VSBAK is distributed in the hope that it will be useful, but
+#  WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+#
+# ------------------------------------------------------------------------------
+
+
+
+TMPLIST=/tmp/vsbak.list
+
+# ------------------------------------------------------------------------------
+#
+#  Functions
+#
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+#  Pause
+# ------------------------------------------------------------------------------
+function pause {
+
+  echo
+  read -n 1 -r -p "Any key to continue ... " KEY
+  echo
+
+}
+
+# ------------------------------------------------------------------------------
+#  Do the backup
+# ------------------------------------------------------------------------------
+function do_backup {
+
+  # Definitions of filenames etc.
+  BASE=`date "+%Y-%m-%d_%H.%M.%S"`
+  TARGZ="$BAKDIR/$BASE.$IFU.tar.gz"
+  export TARGZ_ENC=$TARGZ.gpg
+  export TARGZ_ENC_BASE="${TARGZ_ENC##*/}"
+  UPLOAD=`echo $UPLOAD | envsubst`
+  OLDDIR=`pwd`
+  cd "$SRCDIR"
+
+  # Find all files (inc or full)
+  clear
+  echo
+  echo -n "Collecting files from $SRCDIR "
+  if [[ -n $MIN ]]
+  then
+    echo "newer than $MIN minutes ... "
+    MINARG="-mmin -$MIN"
+  else
+    echo " ... "
+    MINARG=
+  fi
+  find ./ $MINARG -type f | grep -v "Permission denied" > "$TMPLIST"
+  echo done
+
+  # Taring al files
+  echo
+  echo "Starting tar creating $TARGZ ..."
+  echo
+  tar --verbose --totals --exclude-vcs --exclude-from="$EXCLUDE" --files-from="$TMPLIST" -czf "$TARGZ"
+  pause
+
+  # Encrypting
+  echo
+  echo
+  echo -n "Encrypting into $TARGZ_ENC ... "
+
+  if [[ -n $GPGKEY ]]
+  then
+    gpg -e -r $GPGKEY -o $TARGZ_ENC $TARGZ
+  else
+    gpg -c -o $TARGZ_ENC $TARGZ
+  fi
+  echo "done"
+
+  # Uploading if desired
+  if [[ -n $ARCUSER ]]
+  then
+    echo
+    echo
+    echo "Upload to $ARCUSER@archiv.luis.uni-hannover.de"
+
+    if [[ -n $ARCPATH ]] && [[ ${ARCPATH:(-1)} != "/" ]]
+    then
+      ARCPATH=$ARCPATH/
+    fi
+
+    echo
+    lftp -e "put $TARGZ_ENC -o $ARCPATH$TARGZ_ENC_BASE && quit" -u $ARCUSER archiv.luis.uni-hannover.de
+    echo "done"
+  fi
+
+  echo
+  echo "  <o> Remove $TARGZ"
+  echo "  <e> Remove $TARGZ_ENC"
+  if [[ -n $ARCUSER ]]
+  then
+    echo "  <a> Remove both"
+  fi
+  echo "  <q> Remove nothing"
+  echo
+  read -N 1 -p "      Choice: " ANS
+
+  if [[ $ANS = "o" ]] || [[ $ANS = "a" ]]
+  then
+    rm $TARGZ
+  fi
+  if [[ $ANS = "e" ]] || [[ $ANS = "a" ]]
+  then
+    rm $TARGZ_ENC
+  fi
+
+  cd "$OLDDIR"
+
+}
+
+# ------------------------------------------------------------------------------
+#  Get date from filename of backups and vice versa
+# ------------------------------------------------------------------------------
+function get_filename_from_date {
+  local FILE=$1
+
+  FILE=${FILE// /_ }
+  FILE=${FILE//:/\.}
+
+  echo $FILE
+}
+
+function get_date_from_filename {
+  local FILE=$1
+
+  if [[ -z $FILE ]]
+  then
+    FILE="Not available"
+  else
+    FILE=${FILE:0:19}
+    FILE=${FILE//_/ }
+    FILE=${FILE//\./:}
+  fi
+
+  echo $FILE
+}
+
+# ------------------------------------------------------------------------------
+#  Read configuration
+# ------------------------------------------------------------------------------
+function read_configuration {
+
+  OK=0
+
+  bak_src=
+  bak_dest=
+  qpq_key=
+  arc_user=
+  arc_path=
+
+  while [[ $OK = 0 ]]
+  do
+
+    echo
+    echo
+
+    if [[ -e "$CFGFILE" ]]
+    then
+
+      .  "$CFGFILE" 2&> /dev/null
+
+      if [[ $bak_src = "" ]] || [[ $bak_dest = "" ]]
+      then
+
+        echo $ERROR "$CFGFILE"
+        echo "  is not a valid configuraiton file!"
+        echo "  At least source= and destination= have to provided."
+        echo
+        echo "  <e> Edit config file"
+        echo "  <q> Exit"
+        echo
+        read -N 1 -p "      Choice: " ANS;
+        if [[ $ANS = "e" ]]
+        then
+          nano $CFGFILE
+        else
+          echo
+          exit
+        fi
+
+      else
+
+        SRCDIR=$bak_src
+        BAKDIR=$bak_dest
+        if [[ ! -e "$BAKDIR" ]]
+        then
+          echo
+          echo $ERROR "Destination dir $BAKDIR does not exist"
+          echo
+          exit
+        fi
+        if [[ ! -e "$SRCDIR" ]]
+        then
+          echo
+          echo $ERROR "Source dir $SRCDIR does not exist"
+          echo
+          exit
+        fi
+
+        # optional parameters
+
+        GPGKEY=$gpg_key
+        gpg -k $GPGKEY &>/dev/null
+
+        if [[ $? -ne 0 ]]
+        then
+          echo $ERROR "$KEY"
+          echo "  is not a known key in your keyring!"
+          echo
+          echo "  <e> Edit config file"
+          echo "  <s> Use symmetric encryption instead"
+          echo
+          GPGKEY=
+          read -N 1 -p "      Choice: " ANS;
+          if [[ $ANS = "e" ]]
+          then
+            nano $CFGFILE
+          else
+            OK=1
+          fi
+        else
+          OK=1
+        fi
+
+        ARCPATH=$arc_path
+        ARCUSER=$arc_user
+
+      fi
+
+    else
+
+      echo $ERROR "$CFGFILE"
+      echo "with source and destination dir does not exist!"
+      echo
+      echo "  <e> edit the config file"
+      echo "  <q> exit"
+      echo
+      read -N 1 -p "      Choice: " ANS
+      if [[ $ANS = "e" ]]
+      then
+        nano $CFGFILE
+      else
+        echo
+        echo
+        exit
+      fi
+
+    fi
+
+  done
+}
+
+
+
+
+# ------------------------------------------------------------------------------
+#
+#  Main program
+#
+# ------------------------------------------------------------------------------
+
+clear
+echo
+echo '---------------------------------'
+echo '  Very Simple Backup -- vsbak'
+echo '---------------------------------'
+echo
+
+# ------------------------------------------------------------------------------
+#  Definitions
+# ------------------------------------------------------------------------------
+PROGNAME=vsbak
+CFGDIR=$HOME/.config/$PROGNAME
+CFGFILE=$CFGDIR/main.conf
+EXCLUDE=$CFGDIR/exclude.conf
+
+# Make sure, config dir exists
+mkdir -p $CFGDIR
+
+ERROR="$PROGNAME ERROR:"
+
+
+# ------------------------------------------------------------------------------
+#  Get configuration
+# ------------------------------------------------------------------------------
+SRCDIR=
+BAKDIR=
+GPGKEY=
+ARCUSER=
+ARCPATH=
+
+read_configuration
+
+
+# ------------------------------------------------------------------------------
+#  Main program loop
+# ------------------------------------------------------------------------------
+STATE="0";
+
+while [[ $STATE != "q" ]]
+do
+
+  # ----------------------------------------------------------------------------
+  #  User Menu
+  # ----------------------------------------------------------------------------
+
+  clear
+  echo
+  echo '---------------------------------'
+  echo '  Very Simple Backup -- vsbak'
+  echo '---------------------------------'
+  echo
+  echo '  <b> Backup'
+  echo '  <l> Show backup directory'
+  echo '  <c> Edit configuration file'
+  echo '  <x> Edit exclude list'
+  echo '  <q> Quit'
+  echo
+  read -N 1 -p "      Choice: " STATE;
+
+  clear
+
+  case $STATE in
+
+    l)  ls -lsh $BAKDIR
+        pause
+        ;;
+
+    c)  nano $CFGFILE
+        read_configuration
+        ;;
+
+    x)  nano $EXCLUDE
+        ;;
+
+    b)  OLDDIR=`pwd`
+        cd "$BAKDIR"
+        LAST_INC=`ls -1r [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9].[0-9][0-9].[0-9][0-9]*.inc* 2>/dev/null | head -1`
+        LAST_FUL=`ls -1r [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9].[0-9][0-9].[0-9][0-9]*.ful* 2>/dev/null | head -1`
+        LAST_ALL=`ls -1r [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9].[0-9][0-9].[0-9][0-9]*.* 2>/dev/null | head -1`
+        cd "$OLDDIR"
+
+        if [[ $LAST_ALL = *"ful"* ]]
+        then
+          FUI="full"
+        else
+          FUI="inc."
+        fi
+
+        LAST_INC=$(get_date_from_filename $LAST_INC)
+        LAST_FUL=$(get_date_from_filename $LAST_FUL)
+        LAST_ALL=$(get_date_from_filename $LAST_ALL)
+
+        if [[ $LAST_FUL = "Not available" ]]
+        then
+          FORCE_FUL=1
+        else
+          FORCE_FUL=0
+        fi
+
+        echo
+        echo '---------------------------------'
+        echo '  Backup'
+        echo '---------------------------------'
+        echo
+        echo "Source directory:       $SRCDIR"
+        echo "Destination directory:  $BAKDIR"
+        echo
+        echo "Last full backup:       $LAST_FUL"
+        echo "Last inc. backup:       $LAST_INC"
+        echo "Last backup ($FUI):     $LAST_ALL"
+        echo
+        echo "  <f> Full backup"
+        if [[ $FORCE_FUL = 0 ]]
+        then
+          echo "  <i> Inc. backup"
+        fi
+        echo "  <q> Back to main menu (Default)"
+        echo
+        read -N 1 -p "      Choice: " BTYPE;
+
+        case $BTYPE in
+
+          f|i)
+              if [ $BTYPE = "f" ]
+              then
+
+                MIN=""
+                IFU="ful"
+
+              else
+
+                NOW=`date "+%Y-%m-%d %H:%M:%S"`
+                SECONDS=`expr $(date -d "$NOW" '+%s') - $(date -d "$LAST_ALL" '+%s')`
+                MINUTES=`expr $SECONDS / 60`
+                MINUTES=`expr $MINUTES + 1`
+                MIN="$MINUTES"
+                IFU="inc"
+
+              fi
+
+              do_backup
+
+              ;;
+
+          q)  ;;
+
+        esac
+
+  esac
+
+done
+
