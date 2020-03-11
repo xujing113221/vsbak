@@ -17,5 +17,13 @@ Fist of all, the functionality of the command line based script shall be impleme
 Moreover, the GUI shall provide a possibility to select a backup archive for restoring all or singe files into a free chosable destination shall be deisgned and implemented.
 
 
+## Links
 
+  * [C++](http://www.cplusplus.com/)
+    * [C++ Tutorial](http://www.cplusplus.com/doc/tutorial/)
+  * [Qt](https://www.qt.io/)
+    * [Qt for Beginners](https://wiki.qt.io/Qt_for_Beginners)
+    * [Qt Examples And Tutorials](https://doc.qt.io/qt-5/qtexamplesandtutorials.html)
+  * [Bash](https://www.gnu.org/software/bash/) (used for the command line version)
+    * [Bash scripting cheatsheet](https://devhints.io/bash)
 
